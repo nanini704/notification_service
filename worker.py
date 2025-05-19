@@ -38,7 +38,7 @@ def process_notification(notification, max_retries=3):
     success = False
     last_error = None
 
-    # Convert string _id to ObjectId
+    
     if "_id" in notification:
         try:
             notification["_id"] = ObjectId(notification["_id"])

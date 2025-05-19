@@ -1,10 +1,4 @@
-# Ignore Python cache and compiled files
+.env
 __pycache__/
 *.pyc
-
-# Ignore environment variable files
-.env
-
-# Ignore virtual environment folders (optional, if you use venv)
 venv/
-env/

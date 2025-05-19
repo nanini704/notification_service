@@ -10,7 +10,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'secret!')
+app.config['SECRET_KEY'] = os.getenv('SECRET_KEY')
+if not app.config['SECRET_KEY']:
+    raise ValueError("SECRET_KEY not set in environment variables")
 socketio = SocketIO(app, cors_allowed_origins="*")
 
 # MongoDB
@@ -21,31 +23,33 @@ notifications = db.notifications
 # RabbitMQ
 def enqueue_notification(notification):
     try:
-        connection = pika.BlockingConnection(pika.ConnectionParameters('localhost'))
-        channel = connection.channel()
-        channel.queue_declare(queue='notifications', durable=True)
-        channel.basic_publish(
-            exchange='',
-            routing_key='notifications',
-            body=json.dumps(notification),
-            properties=pika.BasicProperties(delivery_mode=2)
-        )
-        connection.close()
+        with pika.BlockingConnection(pika.ConnectionParameters('localhost')) as connection:
+            channel = connection.channel()
+            channel.queue_declare(queue='notifications', durable=True)
+            channel.basic_publish(
+                exchange='',
+                routing_key='notifications',
+                body=json.dumps(notification),
+                properties=pika.BasicProperties(delivery_mode=2)
+            )
     except Exception as e:
-        print("RabbitMQ Error:", e)
+        print(f"RabbitMQ Error: {str(e)}")
 
 @app.route('/')
 def index():
-    return render_template('index.html')
+    return render_template('index2.html')
 
 @app.route('/notifications', methods=["POST"])
 def send_notification():
     data = request.get_json()
+    required_fields = ["user_id", "type", "message"]
     
     # Validation
-    required_fields = ["user_id", "type", "message"]
-    if not data or any(field not in data for field in required_fields):
-        return jsonify({"error": "Missing required fields"}), 400
+    if not data:
+        return jsonify({"error": "No data provided"}), 400
+    missing_fields = [field for field in required_fields if field not in data]
+    if missing_fields:
+        return jsonify({"error": "Missing required fields", "missing": missing_fields}), 400
 
     # Process types
     notif_types = [data["type"]] if isinstance(data["type"], str) else data["type"]
@@ -63,14 +67,18 @@ def send_notification():
     }
 
     # Real-time in-app
-    if "in-app" in notif_types:
+    if "in_app" in notif_types:  
         socketio.emit('new_notification', notification)
         notification["status"] = "sent"
 
     # Save to DB
-    result = notifications.insert_one(notification.copy())
-    notification["_id"] = str(result.inserted_id)
-    notification["timestamp"] = notification["timestamp"].isoformat()
+    try:
+        result = notifications.insert_one(notification.copy())
+        notification["_id"] = str(result.inserted_id)
+        notification["timestamp"] = notification["timestamp"].isoformat()
+    except Exception as e:
+        print(f"MongoDB Insert Error: {str(e)}")
+        return jsonify({"error": "Failed to save notification"}), 500
 
     # Queue email/SMS
     if any(t in notif_types for t in ["email", "sms"]):
@@ -80,11 +88,15 @@ def send_notification():
 
 @app.route('/users/<user_id>/notifications', methods=["GET"])
 def get_user_notifications(user_id):
-    user_notifs = list(notifications.find({"user_id": user_id}))
-    for n in user_notifs:
-        n["_id"] = str(n["_id"])
-        n["timestamp"] = n["timestamp"].isoformat() if isinstance(n["timestamp"], datetime.datetime) else n["timestamp"]
-    return jsonify(user_notifs), 200
+    try:
+        user_notifs = list(notifications.find({"user_id": user_id}))
+        for n in user_notifs:
+            n["_id"] = str(n["_id"])
+            n["timestamp"] = n["timestamp"].isoformat() if isinstance(n["timestamp"], datetime.datetime) else n["timestamp"]
+        return jsonify(user_notifs), 200
+    except Exception as e:
+        print(f"MongoDB Fetch Error: {str(e)}")
+        return jsonify({"error": "Failed to fetch notifications"}), 500
 
 @socketio.on('connect')
 def handle_connect():
